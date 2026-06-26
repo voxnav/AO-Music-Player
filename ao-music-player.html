@@ -171,9 +171,11 @@
   .gmeta{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:14px;line-height:1.6}
   .gmeta b{color:var(--text);font-weight:500}
   .nodes{display:flex;flex-wrap:wrap;gap:6px}
-  .node{font-family:var(--mono);font-size:11px;color:var(--muted);border:1px solid var(--line2);
+  .node{font-family:var(--mono);font-size:11px;color:var(--text);border:1px solid var(--line2);
     background:var(--panel2);border-radius:7px;padding:5px 8px;transition:all .15s;position:relative}
-  .node.branch{color:var(--text);border-color:var(--line2);box-shadow:inset 0 0 0 1px var(--amber)}
+  .node.branch{color:var(--text)}
+  .node.branch::after{content:"";position:absolute;top:3px;right:3px;width:5px;height:5px;
+    border-radius:50%;background:var(--violet);box-shadow:0 0 0 1px rgba(8,12,18,.45)}
   .node.now{color:#0c1410;background:var(--cyan);border-color:var(--cyan);box-shadow:0 0 0 2px rgba(74,214,208,.25)}
   .node.succ{color:var(--amber);border-color:var(--amber)}
   .glegend{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:12px;display:flex;gap:16px;flex-wrap:wrap}
@@ -249,7 +251,7 @@
     <div class="glegend">
       <span><i style="background:var(--cyan)"></i>now playing</span>
       <span><i style="background:var(--amber)"></i>allowed next</span>
-      <span><i style="background:transparent;box-shadow:inset 0 0 0 1px var(--amber)"></i>branch point (&gt;1 exit)</span>
+      <span><i style="background:var(--violet);border-radius:50%"></i>branch point (&gt;1 exit)</span>
     </div>
   </div>
 
