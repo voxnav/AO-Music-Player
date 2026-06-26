@@ -2107,6 +2107,7 @@
   const TICK = 80;                  // scheduler poll interval (ms)
   const FADE_IN_TIME = 2.6;
   const FADE_OUT_TIME = 1.8;
+  const DECLICK = 0.020;            // pause/resume micro-fade (s) — turns the suspend step into a slope
 
   // group colours (assigned on creation)
   const PALETTE = ["#eaa14c","#4ad6d0","#9b8cff","#7fb069","#e3675f","#5aa9e6","#d98cc2","#c9b35a"];
@@ -2492,12 +2493,31 @@
     playing = false; paused = true;                       // set first so the draw loop halts
     clearInterval(schedulerTimer); schedulerTimer = null;
     setPlayBtn(false);
-    if(ctx && ctx.state === "running"){ try{ await ctx.suspend(); }catch(e){} }
+    if(ctx && ctx.state === "running"){
+      if(master){                                         // de-click: ramp out, THEN freeze
+        const now = ctx.currentTime;
+        master.gain.cancelScheduledValues(now);
+        master.gain.setValueAtTime(master.gain.value, now);
+        master.gain.linearRampToValueAtTime(0.0001, now + DECLICK);
+      }
+      await new Promise(r=>setTimeout(r, DECLICK*1000 + 8));   // let the ramp finish in real time
+      if(paused && ctx.state === "running"){ try{ await ctx.suspend(); }catch(e){} }  // skip if resumed meanwhile
+    }
   }
   async function resume(){
     if(!paused) return;
+    if(master && ctx){                                    // pin to silence BEFORE un-suspending
+      const t = ctx.currentTime;
+      master.gain.cancelScheduledValues(t);
+      master.gain.setValueAtTime(0.0001, t);
+    }
     if(ctx && ctx.state === "suspended"){ try{ await ctx.resume(); }catch(e){} }
     paused = false; playing = true;
+    if(master && ctx){                                    // de-click: ramp back in from silence
+      const now = ctx.currentTime;
+      master.gain.setValueAtTime(0.0001, now);
+      master.gain.linearRampToValueAtTime(Math.max(VOL, 0.0002), now + DECLICK);
+    }
     schedulerTimer = setInterval(tick, TICK);
     setPlayBtn(true);
     requestAnimationFrame(draw);
