@@ -2080,6 +2080,7 @@
   const groupOrder = [];            // group names in load order
   let activeGroup = null;           // current layer
   let playing = false;
+  let paused = false;               // suspended via ctx.suspend(), state preserved for resume
   let history = [];                 // recent clip ids (for repeat avoidance)
   const scheduled = [];             // {clip,start,end,overlap,src,gain}
   let lastScheduled = null;         // last clip object we queued
@@ -2403,7 +2404,7 @@
       // graph reached a terminal cue (no successor) and the last clip has rung out
       if(playing && pendingNext === null && scheduled.length === 0){
         if(selected.size >= 2) continueShuffle();   // shuffling → move to another layer
-        else stop();                                // single layer reached a terminal cue
+        else stopReset();                           // single layer reached a terminal cue
       }
     };
     scheduled.push(rec);
@@ -2437,6 +2438,14 @@
 
   async function start(){
     ensureCtx();
+    // A fresh start is a clean slate: hard-stop any leftover sources (e.g. ones frozen by
+    // a pause) BEFORE un-suspending the context, so they can't briefly resume and collide
+    // with the new track. No-op on the very first start (nothing is scheduled yet).
+    if(scheduled.length){
+      scheduled.forEach(r=>{ try{ r.src.onended = null; r.gain.gain.value = 0; r.src.stop(); }catch(e){} });
+      scheduled.length = 0;
+    }
+    pendingNext = null; curClip = null; curRec = null; lastScheduled = null;
     if(ctx.state === "suspended") await ctx.resume();
     if(!selected.size){ toast("Select a track to play"); return; }
     if(!activeGroup || !selected.has(activeGroup)) activeGroup = [...selected][0];
@@ -2446,6 +2455,7 @@
       playBtn.disabled = false;
     }
     playing = true;
+    paused = false;
     armDwell();
     history = [];
     historyNodes = [];
@@ -2465,27 +2475,62 @@
     const first = chooseFirst();
     if(first) scheduleClip(first, t0);
     schedulerTimer = setInterval(tick, TICK);
-    playBtn.textContent = "Stop";
-    playBtn.classList.add("is-playing");
+    setPlayBtn(true);
     requestAnimationFrame(draw);
   }
 
-  function stop(){
-    playing = false;
-    clearInterval(schedulerTimer); schedulerTimer = null;
-    const now = ctx ? ctx.currentTime : 0;
-    if(master){
-      master.gain.cancelScheduledValues(now);
-      master.gain.setValueAtTime(master.gain.value, now);
-      master.gain.linearRampToValueAtTime(0.0001, now+FADE_OUT_TIME);
-    }
-    const stopAt = now + FADE_OUT_TIME + 0.05;
-    scheduled.forEach(r=>{ try{ r.src.stop(stopAt); }catch(e){} });
-    setTimeout(()=>{ scheduled.length=0; nowName.textContent="—"; nextName.textContent="—"; }, (FADE_OUT_TIME+0.1)*1000);
-    playBtn.textContent = "Play";
-    playBtn.classList.remove("is-playing");
-    const cn = $("#cnext"); if(cn) cn.textContent = "";
+  function setPlayBtn(isPlaying){
+    playBtn.textContent = isPlaying ? "Pause" : "Play";
+    playBtn.classList.toggle("is-playing", isPlaying);
   }
+
+  // Pause = freeze, not teardown. Suspending the AudioContext stops the audio clock
+  // (ctx.currentTime), so every scheduled clip, the dwell timer, and the ribbon all
+  // hold in place; resume() continues the very same timeline. State is fully preserved.
+  async function pause(){
+    if(!playing) return;
+    playing = false; paused = true;                       // set first so the draw loop halts
+    clearInterval(schedulerTimer); schedulerTimer = null;
+    setPlayBtn(false);
+    if(ctx && ctx.state === "running"){ try{ await ctx.suspend(); }catch(e){} }
+  }
+  async function resume(){
+    if(!paused) return;
+    if(ctx && ctx.state === "suspended"){ try{ await ctx.resume(); }catch(e){} }
+    paused = false; playing = true;
+    schedulerTimer = setInterval(tick, TICK);
+    setPlayBtn(true);
+    requestAnimationFrame(draw);
+  }
+
+  // Full teardown + state reset (NOT pause). Fades the audio out, drops the whole chain
+  // so nothing can redraw or resume, and clears the ribbon — the next Play is a fresh
+  // start. Used at a natural end-of-cue and when the shuffle pool empties.
+  function stopReset(){
+    playing = false; paused = false;
+    clearInterval(schedulerTimer); schedulerTimer = null;
+    if(ctx){
+      const now = ctx.currentTime;
+      if(master){
+        master.gain.cancelScheduledValues(now);
+        master.gain.setValueAtTime(master.gain.value, now);
+        master.gain.linearRampToValueAtTime(0.0001, now+FADE_OUT_TIME);
+      }
+      const stopAt = now + FADE_OUT_TIME + 0.05;
+      scheduled.forEach(r=>{ try{ r.src.onended = null; r.src.stop(stopAt); }catch(e){} });
+    }
+    // drop the chain immediately so the ribbon (incl. the pending-next preview) can't redraw
+    scheduled.length = 0;
+    pendingNext = null; curClip = null; curRec = null; lastScheduled = null;
+    Object.keys(currentNode).forEach(k=>currentNode[k]=undefined);
+    history = []; historyNodes = [];
+    nowName.textContent = "—"; nextName.textContent = "—";
+    const cn = $("#cnext"); if(cn) cn.textContent = "";
+    setPlayBtn(false);
+    clearRibbon();
+    renderGraphPanel();        // hide the panel if the active layer is gone; clear node highlight
+  }
+  function clearRibbon(){ if(cv) g2.clearRect(0, 0, cv.clientWidth, 140); }
 
   // ---------------------------------------------------------------------------
   // Visualization — live chain ribbon driven by the audio clock
@@ -2579,7 +2624,7 @@
       if(nowClip){ const gi=groupIndex[graphPanelGroup]; if(gi && gi[nowClip.id]!==undefined) highlightNode(gi[nowClip.id]); }
     }
 
-    if(playing || scheduled.length) requestAnimationFrame(draw);
+    if((playing || scheduled.length) && !paused) requestAnimationFrame(draw);
   }
   function roundRect(c,x,y,w,h,r){
     r = Math.min(r, w/2, h/2);
@@ -2712,7 +2757,7 @@
     if(activeGroup && selected.has(activeGroup)) return;
     const rest = [...selected];
     if(rest.length) gotoLayer(pick(rest), false);
-    else { activeGroup = null; if(playing) stop(); }
+    else { activeGroup = null; stopReset(); }
   }
 
   function toggleLayer(g){                              // track-list click
@@ -2904,7 +2949,11 @@
   $("#pickFolder").addEventListener("click", ()=>$("#folderInput").click());
   $("#folderInput").addEventListener("change", e=>loadFiles(e.target.files));
 
-  playBtn.addEventListener("click", ()=>{ if(playing) stop(); else start(); });
+  playBtn.addEventListener("click", ()=>{
+    if(playing) pause();
+    else if(paused) resume();
+    else start();
+  });
 
   const volSlider=$("#vol");
   volSlider.addEventListener("input", e=>{
